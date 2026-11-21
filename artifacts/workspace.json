@@ -1,0 +1,17 @@
+{
+  "root": "/home/dev/feedback/uid32231",
+  "B": "/home/dev/feedback/uid32231",
+  "sha": "8c96a95663550145b3d9f9af695cc2780031c52c",
+  "wslDistro": "Ubuntu-26.04",
+  "source": {
+    "owner": "django-guardian",
+    "repo": "django-guardian",
+    "sha": "8c96a95663550145b3d9f9af695cc2780031c52c"
+  },
+  "fork": {
+    "owner": "Rrr119",
+    "repo": "django-guardian",
+    "cloneUrl": "https://github.com/Rrr119/django-guardian.git"
+  },
+  "at": "2026-11-21T22:37:10.310Z"
+}

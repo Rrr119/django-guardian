@@ -2,6 +2,7 @@ from collections.abc import Iterable
 from itertools import chain
 
 from django.contrib.auth.models import Permission
+from django.db import connection
 from django.db.models import Model
 from django.db.models.query import QuerySet
 from django.utils.encoding import force_str
@@ -34,6 +35,23 @@ def _get_pks_model_and_ctype(objects):
             pks.append(force_str(obj.pk))
 
     return pks, model, ctype
+
+
+def _chunk_pks_for_in_lookup(pks: list) -> Iterable[list]:
+    """Yield ``pks`` in chunks small enough for the database's variable limit.
+
+    Some databases (notably SQLite) cap the number of parameters per query,
+    so a single ``__in`` lookup cannot hold arbitrarily many primary keys.
+    """
+    max_params = connection.features.max_query_params
+    if not max_params or len(pks) <= max_params:
+        yield pks
+        return
+    # Leave headroom for the remaining parameters of the permission filters
+    # (user/group id, content type, ...).
+    chunk_size = max(1, max_params - 16)
+    for start in range(0, len(pks), chunk_size):
+        yield pks[start : start + chunk_size]
 
 
 class ObjectPermissionChecker:
@@ -221,11 +239,11 @@ class ObjectPermissionChecker:
             group_filters.update(
                 {
                     "content_type": ctype,
-                    "object_pk__in": pks,
                 }
             )
+            group_pk_lookup = "object_pk__in"
         else:
-            group_filters.update({"content_object_id__in": pks})
+            group_pk_lookup = "content_object_id__in"
 
         if self.user:
             model = get_user_obj_perms_model(model)
@@ -234,17 +252,30 @@ class ObjectPermissionChecker:
             }
 
             if model.objects.is_generic():
-                user_filters.update({"content_type": ctype, "object_pk__in": pks})
+                user_filters.update({"content_type": ctype})
+                user_pk_lookup = "object_pk__in"
             else:
-                user_filters.update({"content_object_id__in": pks})
+                user_pk_lookup = "content_object_id__in"
 
             # Query user and group permissions separately and then combine
             # the results to avoid a slow query
-            user_perms_qs = model.objects.filter(**user_filters).select_related("permission")
-            group_perms_qs = group_model.objects.filter(**group_filters).select_related("permission")
-            perms = chain(user_perms_qs, group_perms_qs)
+            perms = chain(
+                *(
+                    model.objects.filter(**user_filters, **{user_pk_lookup: chunk}).select_related("permission")
+                    for chunk in _chunk_pks_for_in_lookup(pks)
+                ),
+                *(
+                    group_model.objects.filter(**group_filters, **{group_pk_lookup: chunk}).select_related("permission")
+                    for chunk in _chunk_pks_for_in_lookup(pks)
+                ),
+            )
         else:
-            perms = group_model.objects.filter(**group_filters).select_related("permission")
+            perms = chain(
+                *(
+                    group_model.objects.filter(**group_filters, **{group_pk_lookup: chunk}).select_related("permission")
+                    for chunk in _chunk_pks_for_in_lookup(pks)
+                )
+            )
 
         # initialize entry in '_obj_perms_cache' for all prefetched objects
         # The ctype is assumed above to be homogenous, so leave `objects` unevaluated.
